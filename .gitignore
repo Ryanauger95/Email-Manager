@@ -5,6 +5,8 @@
 client_secret.json
 client_secret*.json
 config/
+!config/categorization_guidelines.md
+!config/priority_senders.json
 token.json
 
 # Python

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 import anthropic
@@ -27,6 +28,23 @@ if TYPE_CHECKING:
     from src.config import AIConfig
 
 logger = logging.getLogger(__name__)
+
+# Default path for the categorization guidelines file
+_GUIDELINES_PATH = Path(__file__).parent.parent.parent / "config" / "categorization_guidelines.md"
+
+
+def _load_guidelines(path: Path = _GUIDELINES_PATH) -> str:
+    """Load categorization guidelines from the markdown file.
+
+    Returns the file contents as a string, or empty string if not found.
+    """
+    try:
+        content = path.read_text()
+        logger.info(f"Loaded categorization guidelines from {path}")
+        return content
+    except FileNotFoundError:
+        logger.warning(f"Guidelines file not found at {path}, using defaults only")
+        return ""
 
 CATEGORIZATION_TOOL = {
     "name": "submit_categorizations",
@@ -89,13 +107,27 @@ DRAFT_TOOL = {
 class EmailCategorizer:
     """Uses Anthropic Claude to categorize email threads and draft replies."""
 
-    def __init__(self, config: AIConfig, user_email: str = ""):
+    def __init__(self, config: AIConfig, user_email: str = "", guidelines_path: Path | None = None):
         self._config = config
         self._user_email = user_email
         if config.oauth_token:
             self._client = anthropic.Anthropic(auth_token=config.oauth_token)
         else:
             self._client = anthropic.Anthropic(api_key=config.api_key)
+
+        # Load and build the full system prompt with guidelines
+        guidelines = _load_guidelines(guidelines_path or _GUIDELINES_PATH)
+        if guidelines:
+            self._system_prompt = (
+                SYSTEM_PROMPT
+                + "\n\n--- USER-DEFINED CATEGORIZATION GUIDELINES ---\n\n"
+                + "The following guidelines were provided by the user. "
+                + "They OVERRIDE the defaults above when there is a conflict. "
+                + "Follow them strictly, especially any sender overrides or custom rules.\n\n"
+                + guidelines
+            )
+        else:
+            self._system_prompt = SYSTEM_PROMPT
 
     # ── Categorization ──────────────────────────────────────────────────
 
@@ -118,7 +150,7 @@ class EmailCategorizer:
                 model=self._config.model,
                 max_tokens=self._config.max_tokens,
                 temperature=self._config.temperature,
-                system=SYSTEM_PROMPT,
+                system=self._system_prompt,
                 messages=[{"role": "user", "content": prompt}],
                 tools=[CATEGORIZATION_TOOL],
                 tool_choice={"type": "tool", "name": "submit_categorizations"},

@@ -4,7 +4,7 @@ import traceback
 from datetime import datetime
 from typing import Optional
 
-from src.models import CategorizedEmail, Digest, PipelineState
+from src.models import CategorizedThread, Digest, PipelineState
 
 
 class SlackFormatter:
@@ -35,7 +35,7 @@ class SlackFormatter:
                     {
                         "type": "mrkdwn",
                         "text": (
-                            f"*{digest.total_emails} emails processed* | "
+                            f"*{digest.total_threads} threads ({digest.total_messages} messages)* | "
                             f"Generated {digest.generated_at.strftime('%Y-%m-%d %H:%M UTC')}"
                         ),
                     }
@@ -48,9 +48,9 @@ class SlackFormatter:
             blocks.append(
                 self._section_header("Action Immediately", len(digest.action_immediately))
             )
-            for email in digest.action_immediately[: self._max_per_category]:
+            for ct in digest.action_immediately[: self._max_per_category]:
                 blocks.extend(
-                    self._format_email_block(email, show_reply=self._include_reply_drafts)
+                    self._format_thread_block(ct, show_reply=self._include_reply_drafts)
                 )
             blocks.append({"type": "divider"})
 
@@ -58,8 +58,8 @@ class SlackFormatter:
             blocks.append(
                 self._section_header("Action Eventually", len(digest.action_eventually))
             )
-            for email in digest.action_eventually[: self._max_per_category]:
-                blocks.extend(self._format_email_block(email, show_reply=False))
+            for ct in digest.action_eventually[: self._max_per_category]:
+                blocks.extend(self._format_thread_block(ct, show_reply=self._include_reply_drafts))
             blocks.append({"type": "divider"})
 
         if digest.summary_only:
@@ -67,10 +67,10 @@ class SlackFormatter:
                 self._section_header("Summary Only", len(digest.summary_only))
             )
             summary_text = "\n".join(
-                f"- <{e.email.gmail_link}|{self._truncate(e.email.subject, 60)}> "
-                f"(P{e.categorization.priority}) - "
-                f"{self._truncate(e.categorization.summary, 80)}"
-                for e in digest.summary_only[: self._max_per_category]
+                f"- <{ct.thread.gmail_link}|{self._truncate(ct.thread.subject, 60)}> "
+                f"(P{ct.categorization.priority}) - "
+                f"{self._truncate(ct.categorization.summary, 80)}"
+                for ct in digest.summary_only[: self._max_per_category]
             )
             blocks.append(
                 {
@@ -138,39 +138,46 @@ class SlackFormatter:
     def _section_header(self, title: str, count: int) -> dict:
         return {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*{title}* ({count} emails)"},
+            "text": {"type": "mrkdwn", "text": f"*{title}* ({count})"},
         }
 
-    def _format_email_block(
-        self, email: CategorizedEmail, show_reply: bool
+    def _format_thread_block(
+        self, ct: CategorizedThread, show_reply: bool
     ) -> list[dict]:
         blocks: list[dict] = []
-        e = email
-        priority_bar = self._priority_indicator(e.categorization.priority)
+        thread = ct.thread
+        priority_bar = self._priority_indicator(ct.categorization.priority)
+
+        if thread.message_count > 1:
+            sender_line = (
+                f"Thread ({thread.message_count} msgs) | "
+                f"{', '.join(thread.participants[:3])}"
+            )
+            if len(thread.participants) > 3:
+                sender_line += f" +{len(thread.participants) - 3} more"
+        else:
+            sender_line = f"From: {thread.messages[0].sender}"
 
         text = (
-            f"{priority_bar} *<{e.email.gmail_link}|"
-            f"{self._truncate(e.email.subject, 80)}>*\n"
-            f"From: {e.email.sender} | Priority: {e.categorization.priority}/10\n"
-            f"{e.categorization.summary}"
+            f"{priority_bar} *<{thread.gmail_link}|"
+            f"{self._truncate(thread.subject, 80)}>*\n"
+            f"{sender_line} | Priority: {ct.categorization.priority}/10\n"
+            f"{ct.categorization.summary}"
         )
         blocks.append(
             {"type": "section", "text": {"type": "mrkdwn", "text": text[:3000]}}
         )
 
-        if show_reply and e.categorization.suggested_reply:
+        if ct.categorization.awaiting_reply:
+            reply_context = ":speech_balloon: *Awaiting your reply*"
+            if show_reply and ct.categorization.suggested_reply:
+                reply_context += (
+                    f"\n*Draft:* _{self._truncate(ct.categorization.suggested_reply, 200)}_"
+                )
             blocks.append(
                 {
                     "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": (
-                                f"*Suggested reply:* "
-                                f"_{self._truncate(e.categorization.suggested_reply, 200)}_"
-                            ),
-                        }
-                    ],
+                    "elements": [{"type": "mrkdwn", "text": reply_context}],
                 }
             )
 

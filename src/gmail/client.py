@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from collections import defaultdict
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Optional
@@ -9,7 +10,7 @@ from typing import TYPE_CHECKING, Optional
 from googleapiclient.discovery import build
 
 from src.gmail.token_manager import TokenManager
-from src.models import RawEmail
+from src.models import EmailThread, RawEmail
 from src.utils.errors import GmailFetchError
 
 if TYPE_CHECKING:
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 GMAIL_LINK_TEMPLATE = "https://mail.google.com/mail/u/0/#inbox/{message_id}"
+GMAIL_THREAD_LINK_TEMPLATE = "https://mail.google.com/mail/u/0/#inbox/{thread_id}"
 
 
 class GmailClient:
@@ -136,3 +138,36 @@ class GmailClient:
             return parsedate_to_datetime(date_str)
         except (ValueError, TypeError):
             return datetime.now(timezone.utc)
+
+    @staticmethod
+    def consolidate_into_threads(emails: list[RawEmail]) -> list[EmailThread]:
+        """Group raw emails by thread_id into EmailThread objects.
+
+        Messages within each thread are sorted chronologically.
+        Threads are sorted by latest message date (most recent first).
+        """
+        thread_map: dict[str, list[RawEmail]] = defaultdict(list)
+        for email in emails:
+            thread_map[email.thread_id].append(email)
+
+        threads: list[EmailThread] = []
+        for thread_id, messages in thread_map.items():
+            messages.sort(key=lambda m: m.date)
+            first_msg = messages[0]
+            # Deduplicated, order-preserving participant list
+            participants = list(dict.fromkeys(m.sender for m in messages))
+
+            threads.append(
+                EmailThread(
+                    thread_id=thread_id,
+                    subject=first_msg.subject,
+                    messages=messages,
+                    gmail_link=GMAIL_THREAD_LINK_TEMPLATE.format(thread_id=thread_id),
+                    message_count=len(messages),
+                    latest_date=messages[-1].date,
+                    participants=participants,
+                )
+            )
+
+        threads.sort(key=lambda t: t.latest_date, reverse=True)
+        return threads

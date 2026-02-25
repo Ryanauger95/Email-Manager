@@ -12,10 +12,11 @@ from src.gmail.client import GmailClient
 from src.gmail.thread_grouper import ThreadGrouper
 from src.logging_config import get_json_formatter
 from src.models import (
-    CategorizedEmail,
+    CategorizedThread,
     Digest,
     DigestGroup,
     EmailCategory,
+    EmailThread,
     LambdaResponse,
     PipelineState,
     RawEmail,
@@ -42,7 +43,8 @@ class PipelineContext:
 
     # Pipeline data
     raw_emails: list[RawEmail] = field(default_factory=list)
-    categorized_emails: list[CategorizedEmail] = field(default_factory=list)
+    threads: list[EmailThread] = field(default_factory=list)
+    categorized_threads: list[CategorizedThread] = field(default_factory=list)
     groups: list[DigestGroup] = field(default_factory=list)
     digest: Optional[Digest] = None
     report_path: Optional[str] = None
@@ -54,6 +56,7 @@ _STATE_ORDER = [
     PipelineState.INIT,
     PipelineState.GATHER_EMAILS,
     PipelineState.CATEGORIZE_EMAILS,
+    PipelineState.DRAFT_REPLIES,
     PipelineState.GROUP_EMAILS,
     PipelineState.GENERATE_REPORT,
     PipelineState.REPORT,
@@ -63,7 +66,7 @@ _STATE_ORDER = [
 class PipelineRunner:
     """Runs the email processing pipeline as an in-process state machine.
 
-    States: INIT -> GATHER_EMAILS -> CATEGORIZE_EMAILS -> GROUP_EMAILS -> GENERATE_REPORT -> REPORT
+    States: INIT -> GATHER_EMAILS -> CATEGORIZE_EMAILS -> DRAFT_REPLIES -> GROUP_EMAILS -> GENERATE_REPORT -> REPORT
     Any failure transitions directly to REPORT, which sends either a success digest or failure alert.
     """
 
@@ -76,6 +79,7 @@ class PipelineRunner:
             PipelineState.INIT: self._execute_init,
             PipelineState.GATHER_EMAILS: self._execute_gather,
             PipelineState.CATEGORIZE_EMAILS: self._execute_categorize,
+            PipelineState.DRAFT_REPLIES: self._execute_draft_replies,
             PipelineState.GROUP_EMAILS: self._execute_group,
             PipelineState.GENERATE_REPORT: self._execute_generate_report,
             PipelineState.REPORT: self._execute_report,
@@ -136,60 +140,90 @@ class PipelineRunner:
 
         if not self._context.raw_emails:
             logger.info("No unlabeled emails found — pipeline will report empty digest")
+            return
+
+        # Consolidate individual emails into threads
+        self._context.threads = GmailClient.consolidate_into_threads(
+            self._context.raw_emails
+        )
+        logger.info(
+            f"Consolidated {len(self._context.raw_emails)} emails into "
+            f"{len(self._context.threads)} threads"
+        )
 
     def _execute_categorize(self) -> None:
-        if not self._context.raw_emails:
-            logger.info("No emails to categorize, skipping")
+        if not self._context.threads:
+            logger.info("No threads to categorize, skipping")
             return
 
         categorizer = EmailCategorizer(self._config.ai)
-        self._context.categorized_emails = categorizer.categorize_all(
-            self._context.raw_emails
+        self._context.categorized_threads = categorizer.categorize_all(
+            self._context.threads
         )
-        logger.info(f"Categorized {len(self._context.categorized_emails)} emails")
+        logger.info(f"Categorized {len(self._context.categorized_threads)} threads")
+
+    def _execute_draft_replies(self) -> None:
+        if not self._context.categorized_threads:
+            logger.info("No categorized threads to draft replies for, skipping")
+            return
+
+        categorizer = EmailCategorizer(self._config.ai)
+        self._context.categorized_threads = categorizer.draft_replies(
+            self._context.categorized_threads
+        )
+
+        drafted_count = sum(
+            1 for ct in self._context.categorized_threads
+            if ct.categorization.awaiting_reply
+        )
+        logger.info(
+            f"Draft phase complete: {drafted_count} threads awaiting reply"
+        )
 
     def _execute_group(self) -> None:
-        if not self._context.categorized_emails:
-            logger.info("No categorized emails to group, skipping")
+        if not self._context.categorized_threads:
+            logger.info("No categorized threads to group, skipping")
             return
 
         grouper = ThreadGrouper()
-        self._context.groups = grouper.group_emails(self._context.categorized_emails)
-        logger.info(f"Created {len(self._context.groups)} email groups")
+        self._context.groups = grouper.group_threads(self._context.categorized_threads)
+        logger.info(f"Created {len(self._context.groups)} display groups")
 
     def _execute_generate_report(self) -> None:
         now = datetime.now(timezone.utc)
-        categorized = self._context.categorized_emails
+        categorized = self._context.categorized_threads
+        total_messages = sum(ct.thread.message_count for ct in categorized)
 
         self._context.digest = Digest(
             generated_at=now,
-            total_emails=len(categorized),
+            total_threads=len(categorized),
+            total_messages=total_messages,
             groups=self._context.groups,
             action_immediately=sorted(
                 [
-                    e
-                    for e in categorized
-                    if e.categorization.category == EmailCategory.ACTION_IMMEDIATELY
+                    t
+                    for t in categorized
+                    if t.categorization.category == EmailCategory.ACTION_IMMEDIATELY
                 ],
-                key=lambda e: e.categorization.priority,
+                key=lambda t: t.categorization.priority,
                 reverse=True,
             ),
             action_eventually=sorted(
                 [
-                    e
-                    for e in categorized
-                    if e.categorization.category == EmailCategory.ACTION_EVENTUALLY
+                    t
+                    for t in categorized
+                    if t.categorization.category == EmailCategory.ACTION_EVENTUALLY
                 ],
-                key=lambda e: e.categorization.priority,
+                key=lambda t: t.categorization.priority,
                 reverse=True,
             ),
             summary_only=sorted(
                 [
-                    e
-                    for e in categorized
-                    if e.categorization.category == EmailCategory.SUMMARY_ONLY
+                    t
+                    for t in categorized
+                    if t.categorization.category == EmailCategory.SUMMARY_ONLY
                 ],
-                key=lambda e: e.categorization.priority,
+                key=lambda t: t.categorization.priority,
                 reverse=True,
             ),
         )
@@ -229,7 +263,7 @@ class PipelineRunner:
             logger.info("No digest to send (no emails found)")
             return
 
-        if self._context.digest.total_emails == 0:
+        if self._context.digest.total_threads == 0:
             logger.info("Empty digest, skipping Slack notification")
             return
 
@@ -267,30 +301,32 @@ class PipelineRunner:
             )
 
     def _build_response(self) -> LambdaResponse:
-        categorized = self._context.categorized_emails
+        categorized = self._context.categorized_threads
+        total_messages = sum(ct.thread.message_count for ct in categorized)
         category_counts = {}
         if categorized:
             category_counts = {
                 "Action Immediately": sum(
                     1
-                    for e in categorized
-                    if e.categorization.category == EmailCategory.ACTION_IMMEDIATELY
+                    for t in categorized
+                    if t.categorization.category == EmailCategory.ACTION_IMMEDIATELY
                 ),
                 "Action Eventually": sum(
                     1
-                    for e in categorized
-                    if e.categorization.category == EmailCategory.ACTION_EVENTUALLY
+                    for t in categorized
+                    if t.categorization.category == EmailCategory.ACTION_EVENTUALLY
                 ),
                 "Summary Only": sum(
                     1
-                    for e in categorized
-                    if e.categorization.category == EmailCategory.SUMMARY_ONLY
+                    for t in categorized
+                    if t.categorization.category == EmailCategory.SUMMARY_ONLY
                 ),
             }
 
         return LambdaResponse(
             status="success" if self._context.success else "error",
-            emails_processed=len(categorized),
+            threads_processed=len(categorized),
+            emails_processed=total_messages,
             emails_by_category=category_counts,
             slack_sent=self._context.slack_sent,
             report_location=self._context.report_path,

@@ -1,8 +1,8 @@
 """Local test runner — runs the full pipeline end-to-end.
 
 Loads credentials from .env file, fetches real emails from Gmail,
-categorizes with Claude, generates the markdown report, sends a
-Slack DM digest, and prints results to stdout.
+consolidates them into threads, categorizes with Claude, generates
+the markdown report, sends a Slack DM digest, and prints results.
 
 Usage:
     python scripts/test_local.py               # Full pipeline (Gmail + AI + Slack)
@@ -133,7 +133,7 @@ def make_fake_emails():
     ]
 
 
-def print_results(categorized_emails, digest, report_path):
+def print_results(categorized_threads, digest, report_path):
     """Pretty-print results to terminal."""
     from src.models import EmailCategory
 
@@ -141,15 +141,15 @@ def print_results(categorized_emails, digest, report_path):
     print("  EMAIL MANAGER — LOCAL TEST RESULTS")
     print("=" * 70)
 
-    print(f"\n  Total emails processed: {len(categorized_emails)}")
+    print(f"\n  Threads: {digest.total_threads} | Messages: {digest.total_messages}")
 
     categories = {
         EmailCategory.ACTION_IMMEDIATELY: [],
         EmailCategory.ACTION_EVENTUALLY: [],
         EmailCategory.SUMMARY_ONLY: [],
     }
-    for e in categorized_emails:
-        categories[e.categorization.category].append(e)
+    for ct in categorized_threads:
+        categories[ct.categorization.category].append(ct)
 
     colors = {
         EmailCategory.ACTION_IMMEDIATELY: "\033[91m",  # Red
@@ -159,30 +159,39 @@ def print_results(categorized_emails, digest, report_path):
     reset = "\033[0m"
     bold = "\033[1m"
 
-    for category, emails in categories.items():
+    for category, threads in categories.items():
         color = colors[category]
         print(f"\n{color}{bold}  {'─' * 66}")
-        print(f"  {category.value.upper()} ({len(emails)} emails)")
+        print(f"  {category.value.upper()} ({len(threads)} threads)")
         print(f"  {'─' * 66}{reset}")
 
-        for e in sorted(emails, key=lambda x: x.categorization.priority, reverse=True):
-            print(f"\n  {color}{'●' * e.categorization.priority}{'○' * (10 - e.categorization.priority)}{reset} P{e.categorization.priority}")
-            print(f"  {bold}{e.email.subject}{reset}")
-            print(f"  From: {e.email.sender}")
-            print(f"  {e.categorization.summary}")
-            print(f"  Reason: {e.categorization.reasoning}")
-            if e.categorization.suggested_reply:
-                print(f"  {bold}Suggested reply:{reset} {e.categorization.suggested_reply[:150]}")
-            print(f"  Link: {e.email.gmail_link}")
+        for ct in sorted(threads, key=lambda x: x.categorization.priority, reverse=True):
+            thread = ct.thread
+            print(f"\n  {color}{'●' * ct.categorization.priority}{'○' * (10 - ct.categorization.priority)}{reset} P{ct.categorization.priority}")
+            print(f"  {bold}{thread.subject}{reset}")
+            if thread.message_count > 1:
+                print(f"  Thread ({thread.message_count} msgs) | {', '.join(thread.participants)}")
+            else:
+                print(f"  From: {thread.messages[0].sender}")
+            print(f"  {ct.categorization.summary}")
+            print(f"  Reason: {ct.categorization.reasoning}")
+            if ct.categorization.awaiting_reply:
+                print(f"  {bold}\033[96mAwaiting your reply{reset}")
+                if ct.categorization.suggested_reply:
+                    print(f"  {bold}Draft:{reset} {ct.categorization.suggested_reply[:200]}")
+            else:
+                if category != EmailCategory.SUMMARY_ONLY:
+                    print(f"  \033[90mNo reply needed{reset}")
+            print(f"  Link: {thread.gmail_link}")
 
     if report_path and Path(report_path).exists():
         print(f"\n{'=' * 70}")
         print(f"  Markdown report saved to: {report_path}")
 
     if digest and digest.groups:
-        print(f"\n  Email groups: {len(digest.groups)}")
+        print(f"\n  Display groups: {len(digest.groups)}")
         for group in digest.groups:
-            print(f"    - {group.group_label} ({len(group.emails)} emails, max P{group.highest_priority})")
+            print(f"    - {group.group_label} ({len(group.threads)} threads, max P{group.highest_priority})")
 
     print(f"\n{'=' * 70}\n")
 
@@ -214,7 +223,7 @@ def run_test(
 
     setup_logging(level="DEBUG", log_format="text")
 
-    total_steps = 5 if not skip_slack else 4
+    total_steps = 7 if not skip_slack else 6
     step = 0
 
     # Step 1: Get emails
@@ -233,46 +242,60 @@ def run_test(
         print("\n  No emails to process. Done!")
         return
 
+    # Step 2: Consolidate into threads
+    step += 1
+    print(f"\n[{step}/{total_steps}] Consolidating into threads...")
+    threads = GmailClient.consolidate_into_threads(raw_emails)
+    print(f"  {len(raw_emails)} emails → {len(threads)} threads")
+    for t in threads:
+        suffix = f" ({t.message_count} msgs)" if t.message_count > 1 else ""
+        print(f"    - {t.subject}{suffix}")
+
     if skip_ai:
-        print(f"\n[{step + 1}/{total_steps}] Skipping AI categorization")
-        print("  Emails fetched successfully. Gmail connection works!\n")
-        for e in raw_emails:
-            print(f"  - {e.subject}")
-            print(f"    From: {e.sender} | Date: {e.date}")
+        print(f"\n  Gmail connection works! Skipping AI categorization.")
         return
 
-    # Step 2: Categorize
+    # Step 3: Categorize
     step += 1
     print(f"\n[{step}/{total_steps}] Categorizing with Claude...")
     categorizer = EmailCategorizer(config.ai)
-    categorized = categorizer.categorize_all(raw_emails)
-    print(f"  Categorized {len(categorized)} emails")
+    categorized = categorizer.categorize_all(threads)
+    print(f"  Categorized {len(categorized)} threads")
 
-    # Step 3: Group
+    # Step 4: Draft replies
     step += 1
-    print(f"\n[{step}/{total_steps}] Grouping emails...")
-    grouper = ThreadGrouper()
-    groups = grouper.group_emails(categorized)
-    print(f"  Created {len(groups)} groups")
+    print(f"\n[{step}/{total_steps}] Drafting replies (if awaiting)...")
+    categorized = categorizer.draft_replies(categorized)
+    awaiting = sum(1 for ct in categorized if ct.categorization.awaiting_reply)
+    print(f"  {awaiting} threads awaiting your reply")
 
-    # Step 4: Generate report
+    # Step 5: Group
+    step += 1
+    print(f"\n[{step}/{total_steps}] Grouping threads...")
+    grouper = ThreadGrouper()
+    groups = grouper.group_threads(categorized)
+    print(f"  Created {len(groups)} display groups")
+
+    # Step 6: Generate report
     step += 1
     print(f"\n[{step}/{total_steps}] Generating report...")
+    total_messages = sum(ct.thread.message_count for ct in categorized)
     digest = Digest(
         generated_at=datetime.now(timezone.utc),
-        total_emails=len(categorized),
+        total_threads=len(categorized),
+        total_messages=total_messages,
         groups=groups,
         action_immediately=sorted(
-            [e for e in categorized if e.categorization.category == EmailCategory.ACTION_IMMEDIATELY],
-            key=lambda e: e.categorization.priority, reverse=True,
+            [t for t in categorized if t.categorization.category == EmailCategory.ACTION_IMMEDIATELY],
+            key=lambda t: t.categorization.priority, reverse=True,
         ),
         action_eventually=sorted(
-            [e for e in categorized if e.categorization.category == EmailCategory.ACTION_EVENTUALLY],
-            key=lambda e: e.categorization.priority, reverse=True,
+            [t for t in categorized if t.categorization.category == EmailCategory.ACTION_EVENTUALLY],
+            key=lambda t: t.categorization.priority, reverse=True,
         ),
         summary_only=sorted(
-            [e for e in categorized if e.categorization.category == EmailCategory.SUMMARY_ONLY],
-            key=lambda e: e.categorization.priority, reverse=True,
+            [t for t in categorized if t.categorization.category == EmailCategory.SUMMARY_ONLY],
+            key=lambda t: t.categorization.priority, reverse=True,
         ),
     )
 
@@ -282,7 +305,7 @@ def run_test(
     # Always print to terminal
     print_results(categorized, digest, report_path)
 
-    # Step 5: Send Slack DM
+    # Step 7: Send Slack DM
     if not skip_slack:
         step += 1
         print(f"[{step}/{total_steps}] Sending Slack DM digest...")

@@ -15,6 +15,7 @@ class GmailConfig:
     client_id: str
     client_secret: str
     refresh_token: str
+    user_email: str = ""
     scopes: list[str] = field(
         default_factory=lambda: ["https://www.googleapis.com/auth/gmail.readonly"]
     )
@@ -116,6 +117,7 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
                 client_id=os.environ["GMAIL_CLIENT_ID"],
                 client_secret=os.environ["GMAIL_CLIENT_SECRET"],
                 refresh_token=os.environ["GMAIL_REFRESH_TOKEN"],
+                user_email=os.environ.get("USER_EMAIL", ""),
                 scopes=gmail_cfg.get("scopes", ["https://www.googleapis.com/auth/gmail.readonly"]),
                 query=gmail_cfg.get("query", "has:nouserlabels newer_than:2h"),
                 max_results_per_page=gmail_cfg.get("max_results_per_page", 100),

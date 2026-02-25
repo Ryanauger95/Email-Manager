@@ -54,19 +54,25 @@ THREAD_MESSAGE_XML_TEMPLATE = """<message from="{sender}" date="{date}">
 
 # --- Draft replies phase ---
 
-DRAFT_SYSTEM_PROMPT = """You are an email reply assistant. You will be given email threads that have been categorized as needing action.
+DRAFT_SYSTEM_PROMPT = """You are an email reply assistant. You will be given email threads that have been categorized as needing action. The user's email address is: {user_email}
 
 For each thread, you must determine:
-1. Is the sender (or someone in the thread) WAITING for a reply from the user? Look at the most recent messages — if the last message is FROM the user, or if the thread has been resolved, or if it's a notification that doesn't expect a response, then no reply is needed.
-2. If a reply IS needed, draft a concise, professional reply the user can review and send.
+1. Is someone WAITING for a reply from the user ({user_email})? To decide, look at the "from" field of the MOST RECENT message in the thread:
+   - If the most recent message is FROM {user_email} → the user already replied → awaiting_reply = false
+   - If the thread is a notification, automated message, or doesn't expect a human response → awaiting_reply = false
+   - If the user ({user_email}) is only CC'd but not directly addressed → awaiting_reply = false
+   - ONLY set awaiting_reply = true if someone OTHER than {user_email} sent the most recent message AND that message explicitly asks the user a question, requests something, or is clearly waiting on the user's response.
+2. If and ONLY if awaiting_reply is true, draft a concise, professional reply the user can review and send.
 
-Be strict about this: only set awaiting_reply to true if someone has explicitly asked the user something, requested something from them, or is clearly waiting on the user's response. Automated notifications, CC'd threads where the user isn't addressed, and threads where the user already replied do NOT need a reply."""
+Be very strict: when in doubt, set awaiting_reply to false."""
 
-DRAFT_REPLIES_PROMPT = """For each of the following {count} email threads, determine if the sender is waiting on a reply from the user, and if so, draft a reply.
+DRAFT_REPLIES_PROMPT = """The user's email address is: {user_email}
+
+For each of the following {count} email threads, determine if someone is waiting on a reply from {user_email}, and if so, draft a reply.
 
 {threads_xml}
 
 Respond with a JSON object containing a "drafts" array. Each element must have:
 - "thread_id": the id attribute from the thread or email element
-- "awaiting_reply": boolean — true ONLY if someone is waiting for the user to reply
+- "awaiting_reply": boolean — true ONLY if the most recent message is NOT from {user_email} AND that person is clearly waiting for {user_email} to respond
 - "suggested_reply": if awaiting_reply is true, a concise professional draft reply. If false, null."""

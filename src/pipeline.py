@@ -156,7 +156,7 @@ class PipelineRunner:
             logger.info("No threads to categorize, skipping")
             return
 
-        categorizer = EmailCategorizer(self._config.ai)
+        categorizer = EmailCategorizer(self._config.ai, user_email=self._config.gmail.user_email)
         self._context.categorized_threads = categorizer.categorize_all(
             self._context.threads
         )
@@ -167,7 +167,7 @@ class PipelineRunner:
             logger.info("No categorized threads to draft replies for, skipping")
             return
 
-        categorizer = EmailCategorizer(self._config.ai)
+        categorizer = EmailCategorizer(self._config.ai, user_email=self._config.gmail.user_email)
         self._context.categorized_threads = categorizer.draft_replies(
             self._context.categorized_threads
         )

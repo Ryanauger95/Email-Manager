@@ -89,8 +89,9 @@ DRAFT_TOOL = {
 class EmailCategorizer:
     """Uses Anthropic Claude to categorize email threads and draft replies."""
 
-    def __init__(self, config: AIConfig):
+    def __init__(self, config: AIConfig, user_email: str = ""):
         self._config = config
+        self._user_email = user_email
         if config.oauth_token:
             self._client = anthropic.Anthropic(auth_token=config.oauth_token)
         else:
@@ -219,6 +220,12 @@ class EmailCategorizer:
             logger.info("No actionable threads to draft replies for")
             return threads
 
+        if not self._user_email:
+            logger.warning(
+                "USER_EMAIL not set — draft phase cannot identify which messages are yours. "
+                "Set USER_EMAIL in .env for accurate reply detection."
+            )
+
         logger.info(f"Drafting replies for {len(actionable)} actionable threads")
 
         # Process in batches
@@ -247,17 +254,22 @@ class EmailCategorizer:
             self._build_thread_xml(ct.thread) for ct in threads
         )
 
+        user_email = self._user_email or "unknown"
+
         prompt = DRAFT_REPLIES_PROMPT.format(
             count=len(threads),
             threads_xml=threads_xml,
+            user_email=user_email,
         )
+
+        system = DRAFT_SYSTEM_PROMPT.format(user_email=user_email)
 
         try:
             response = self._client.messages.create(
                 model=self._config.model,
                 max_tokens=self._config.max_tokens,
                 temperature=self._config.temperature,
-                system=DRAFT_SYSTEM_PROMPT,
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 tools=[DRAFT_TOOL],
                 tool_choice={"type": "tool", "name": "submit_drafts"},

@@ -258,7 +258,7 @@ def run_test(
     # Step 3: Categorize
     step += 1
     print(f"\n[{step}/{total_steps}] Categorizing with Claude...")
-    categorizer = EmailCategorizer(config.ai)
+    categorizer = EmailCategorizer(config.ai, user_email=config.gmail.user_email)
     categorized = categorizer.categorize_all(threads)
     print(f"  Categorized {len(categorized)} threads")
 

@@ -1,0 +1,33 @@
+gmail:
+  scopes:
+    - "https://www.googleapis.com/auth/gmail.readonly"
+  query: "has:nouserlabels newer_than:2h"
+  max_results_per_page: 100
+  max_total_emails: 500
+
+ai:
+  model: "claude-sonnet-4-5-20250929"
+  max_tokens: 4096
+  temperature: 0.2
+  batch_size: 10
+  max_concurrent_requests: 5
+
+report:
+  format: "markdown"
+  output_path: "/tmp/email_digest.md"
+  s3_bucket: ""
+  s3_prefix: "digests/"
+
+slack:
+  enabled: true
+  max_message_length: 3000
+  include_reply_drafts: true
+  max_emails_per_category: 15
+
+rate_limits:
+  gmail_requests_per_second: 10
+  anthropic_requests_per_minute: 50
+
+logging:
+  level: "INFO"
+  format: "json"

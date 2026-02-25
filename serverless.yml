@@ -1,0 +1,83 @@
+service: email-manager
+
+frameworkVersion: "4"
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: us-east-1
+  stage: ${opt:stage, 'prod'}
+  timeout: 300
+  memorySize: 512
+  architecture: arm64
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - ssm:GetParameter
+            - ssm:PutParameter
+          Resource:
+            - arn:aws:ssm:${self:provider.region}:*:parameter/email-manager/*
+        - Effect: Allow
+          Action:
+            - kms:Decrypt
+          Resource:
+            - arn:aws:kms:${self:provider.region}:*:key/*
+
+  environment:
+    GMAIL_CLIENT_ID: ${ssm:/email-manager/gmail/client-id}
+    GMAIL_CLIENT_SECRET: ${ssm:/email-manager/gmail/client-secret~true}
+    GMAIL_REFRESH_TOKEN: ${ssm:/email-manager/gmail/refresh-token~true}
+    # Anthropic auth: set ONE of these in SSM (leave the other empty/unset)
+    ANTHROPIC_API_KEY: ${ssm:/email-manager/anthropic/api-key~true, ''}
+    CLAUDE_CODE_OAUTH_TOKEN: ${ssm:/email-manager/anthropic/oauth-token~true, ''}
+    SLACK_BOT_TOKEN: ${ssm:/email-manager/slack/bot-token~true}
+    SLACK_SIGNING_SECRET: ${ssm:/email-manager/slack/signing-secret~true}
+    SLACK_USER_ID: ${ssm:/email-manager/slack/user-id}
+    CONFIG_PATH: config.yaml
+    LOG_LEVEL: INFO
+
+functions:
+  emailDigest:
+    handler: src/handler.run
+    description: Fetches unlabeled Gmail emails, categorizes with AI, sends Slack digest
+    events:
+      - schedule:
+          rate: rate(1 hour)
+          enabled: true
+          description: Run email digest every hour
+    layers:
+      - Ref: PythonRequirementsLambdaLayer
+
+package:
+  individually: true
+  patterns:
+    - "!**"
+    - "src/**"
+    - "config.yaml"
+    - "!tests/**"
+    - "!scripts/**"
+    - "!node_modules/**"
+    - "!.git/**"
+    - "!.env*"
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    dockerizePip: non-linux
+    dockerImage: public.ecr.aws/sam/build-python3.12:latest
+    layer: true
+    zip: true
+    slim: true
+    slimPatternsAppend:
+      - "**/*.pyc"
+      - "**/__pycache__/**"
+      - "**/*.dist-info/**"
+    noDeploy:
+      - pytest
+      - boto3
+      - botocore

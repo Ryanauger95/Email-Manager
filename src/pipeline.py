@@ -9,6 +9,7 @@ from typing import Optional
 from src.ai.categorizer import EmailCategorizer
 from src.config import AppConfig
 from src.gmail.client import GmailClient
+from src.gmail.proxy_client import GmailProxyClient
 from src.gmail.thread_grouper import ThreadGrouper
 from src.logging_config import get_json_formatter
 from src.models import (
@@ -57,6 +58,7 @@ _STATE_ORDER = [
     PipelineState.GATHER_EMAILS,
     PipelineState.CATEGORIZE_EMAILS,
     PipelineState.DRAFT_REPLIES,
+    PipelineState.APPLY_LABELS,
     PipelineState.GROUP_EMAILS,
     PipelineState.GENERATE_REPORT,
     PipelineState.REPORT,
@@ -66,7 +68,7 @@ _STATE_ORDER = [
 class PipelineRunner:
     """Runs the email processing pipeline as an in-process state machine.
 
-    States: INIT -> GATHER_EMAILS -> CATEGORIZE_EMAILS -> DRAFT_REPLIES -> GROUP_EMAILS -> GENERATE_REPORT -> REPORT
+    States: INIT -> GATHER -> CATEGORIZE -> DRAFT -> APPLY_LABELS -> GROUP -> REPORT_GEN -> REPORT
     Any failure transitions directly to REPORT, which sends either a success digest or failure alert.
     """
 
@@ -80,6 +82,7 @@ class PipelineRunner:
             PipelineState.GATHER_EMAILS: self._execute_gather,
             PipelineState.CATEGORIZE_EMAILS: self._execute_categorize,
             PipelineState.DRAFT_REPLIES: self._execute_draft_replies,
+            PipelineState.APPLY_LABELS: self._execute_apply_labels,
             PipelineState.GROUP_EMAILS: self._execute_group,
             PipelineState.GENERATE_REPORT: self._execute_generate_report,
             PipelineState.REPORT: self._execute_report,
@@ -131,6 +134,8 @@ class PipelineRunner:
 
     def _execute_init(self) -> None:
         self._config.slack.validate()
+        if self._config.gmail_proxy.enabled:
+            self._config.gmail_proxy.validate()
         logger.info("Pipeline initialized", extra={"state": "INIT"})
 
     def _execute_gather(self) -> None:
@@ -178,6 +183,30 @@ class PipelineRunner:
         )
         logger.info(
             f"Draft phase complete: {drafted_count} threads awaiting reply"
+        )
+
+    def _execute_apply_labels(self) -> None:
+        """Apply Gmail labels and archive Summary Only threads via the proxy API."""
+        if not self._config.gmail_proxy.enabled:
+            logger.info("Gmail proxy disabled, skipping label/archive step")
+            return
+
+        if not self._context.categorized_threads:
+            logger.info("No categorized threads to label, skipping")
+            return
+
+        proxy = GmailProxyClient(self._config.gmail_proxy)
+        stats = proxy.apply_labels_and_archive(self._context.categorized_threads)
+
+        if stats["errors"] > 0:
+            self._context.errors.append(
+                f"Gmail labeling: {stats['errors']} errors "
+                f"({stats['labeled']} labeled, {stats['archived']} archived)"
+            )
+
+        logger.info(
+            f"Labels applied: {stats['labeled']} labeled, "
+            f"{stats['archived']} archived, {stats['errors']} errors"
         )
 
     def _execute_group(self) -> None:

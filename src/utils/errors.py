@@ -18,6 +18,10 @@ class AnthropicRateLimitError(AnthropicAPIError):
     pass
 
 
+class GmailActionError(EmailManagerError):
+    pass
+
+
 class SlackDeliveryError(EmailManagerError):
     pass
 

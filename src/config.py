@@ -25,6 +25,24 @@ class GmailConfig:
 
 
 @dataclass
+class GmailProxyConfig:
+    api_url: str = ""
+    secret: str = ""
+    enabled: bool = True
+    archive_summary: bool = True
+    timeout: int = 10
+
+    def validate(self) -> None:
+        """Validate that required fields are set when proxy is enabled."""
+        if self.enabled and (not self.api_url or not self.secret):
+            raise ConfigError(
+                "GMAIL_PROXY_URL and GMAIL_PROXY_SECRET are required when "
+                "gmail_proxy is enabled. Set them in .env or disable in config.yaml "
+                "(gmail_proxy.enabled: false)."
+            )
+
+
+@dataclass
 class AIConfig:
     api_key: Optional[str] = None
     oauth_token: Optional[str] = None
@@ -79,6 +97,7 @@ class LoggingConfig:
 @dataclass
 class AppConfig:
     gmail: GmailConfig
+    gmail_proxy: GmailProxyConfig
     ai: AIConfig
     slack: SlackConfig
     report: ReportConfig
@@ -106,6 +125,7 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         raise ConfigError(f"Failed to parse config.yaml: {e}") from e
 
     gmail_cfg = raw.get("gmail", {})
+    gmail_proxy_cfg = raw.get("gmail_proxy", {})
     ai_cfg = raw.get("ai", {})
     slack_cfg = raw.get("slack", {})
     report_cfg = raw.get("report", {})
@@ -122,6 +142,13 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
                 query=gmail_cfg.get("query", "has:nouserlabels newer_than:2h"),
                 max_results_per_page=gmail_cfg.get("max_results_per_page", 100),
                 max_total_emails=gmail_cfg.get("max_total_emails", 500),
+            ),
+            gmail_proxy=GmailProxyConfig(
+                api_url=os.environ.get("GMAIL_PROXY_URL", gmail_proxy_cfg.get("api_url", "")),
+                secret=os.environ.get("GMAIL_PROXY_SECRET", ""),
+                enabled=gmail_proxy_cfg.get("enabled", True),
+                archive_summary=gmail_proxy_cfg.get("archive_summary", True),
+                timeout=gmail_proxy_cfg.get("timeout", 10),
             ),
             ai=AIConfig(
                 api_key=os.environ.get("ANTHROPIC_API_KEY"),

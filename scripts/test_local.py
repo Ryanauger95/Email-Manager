@@ -1,14 +1,16 @@
 """Local test runner — runs the full pipeline end-to-end.
 
 Loads credentials from .env file, fetches real emails from Gmail,
-consolidates them into threads, categorizes with Claude, generates
-the markdown report, sends a Slack DM digest, and prints results.
+consolidates them into threads, categorizes with Claude, applies Gmail
+labels, generates the markdown report, sends a Slack DM digest, and
+prints results.
 
 Usage:
     python scripts/test_local.py               # Full pipeline (Gmail + AI + Slack)
     python scripts/test_local.py --skip-gmail   # Use fake emails instead of Gmail
     python scripts/test_local.py --skip-ai      # Skip AI, just test Gmail connection
     python scripts/test_local.py --skip-slack   # Skip Slack DM, just print to terminal
+    python scripts/test_local.py --skip-labels  # Skip Gmail labeling/archiving
 """
 
 from __future__ import annotations
@@ -200,6 +202,7 @@ def run_test(
     skip_gmail: bool = False,
     skip_ai: bool = False,
     skip_slack: bool = False,
+    skip_labels: bool = False,
 ):
     from src.config import load_config
     from src.logging_config import setup_logging
@@ -223,7 +226,12 @@ def run_test(
 
     setup_logging(level="DEBUG", log_format="text")
 
-    total_steps = 7 if not skip_slack else 6
+    total_steps = 5  # gather, consolidate, categorize, draft, report
+    if not skip_labels:
+        total_steps += 1  # label/archive
+    if not skip_slack:
+        total_steps += 1  # slack
+    total_steps += 1  # group
     step = 0
 
     # Step 1: Get emails
@@ -269,7 +277,22 @@ def run_test(
     awaiting = sum(1 for ct in categorized if ct.categorization.awaiting_reply)
     print(f"  {awaiting} threads awaiting your reply")
 
-    # Step 5: Group
+    # Step 5: Apply labels and archive
+    if not skip_labels:
+        step += 1
+        print(f"\n[{step}/{total_steps}] Applying Gmail labels and archiving...")
+        if skip_gmail:
+            print("  (Skipped — using fake emails, no real thread IDs)")
+        else:
+            from src.gmail.proxy_client import GmailProxyClient
+            if config.gmail_proxy.enabled and config.gmail_proxy.secret:
+                proxy = GmailProxyClient(config.gmail_proxy)
+                stats = proxy.apply_labels_and_archive(categorized)
+                print(f"  Labeled: {stats['labeled']} | Archived: {stats['archived']} | Errors: {stats['errors']}")
+            else:
+                print("  \033[93mGmail proxy not configured (GMAIL_PROXY_SECRET missing), skipping\033[0m")
+
+    # Step 6: Group
     step += 1
     print(f"\n[{step}/{total_steps}] Grouping threads...")
     grouper = ThreadGrouper()
@@ -340,6 +363,10 @@ def main():
         "--skip-slack", action="store_true",
         help="Skip Slack DM — just print results to terminal",
     )
+    parser.add_argument(
+        "--skip-labels", action="store_true",
+        help="Skip Gmail labeling and archiving via proxy",
+    )
     args = parser.parse_args()
 
     try:
@@ -347,6 +374,7 @@ def main():
             skip_gmail=args.skip_gmail,
             skip_ai=args.skip_ai,
             skip_slack=args.skip_slack,
+            skip_labels=args.skip_labels,
         )
     except Exception as e:
         print(f"\n\033[91mERROR: {type(e).__name__}: {e}\033[0m", file=sys.stderr)

@@ -1,9 +1,14 @@
 gmail:
   scopes:
     - "https://www.googleapis.com/auth/gmail.readonly"
-  query: "has:nouserlabels newer_than:2h"
+  query: "has:nouserlabels in:inbox"
   max_results_per_page: 100
   max_total_emails: 500
+
+gmail_proxy:
+  enabled: true
+  archive_summary: true    # Archive "Summary Only" threads (remove from inbox)
+  timeout: 10              # HTTP timeout in seconds per request
 
 ai:
   model: "claude-sonnet-4-5-20250929"

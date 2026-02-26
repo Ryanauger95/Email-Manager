@@ -124,13 +124,3 @@ You can add overrides for specific senders or domains:
 ### Sender Overrides
 - kryzrestauro@gmail.com = Action Eventually
  
-
-### Adding keyword-based rules
-
-```
-### Keyword Rules
-- Subject contains "URGENT" or "P0" → minimum priority 8
-- Subject contains "FYI" or "no action needed" → default to "Summary Only"
-```
-
-> This file is loaded at runtime and injected into the AI system prompt. Any changes here take effect on the next pipeline run.

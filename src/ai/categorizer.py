@@ -11,8 +11,10 @@ from src.ai.prompts import (
     BATCH_CATEGORIZATION_PROMPT,
     DRAFT_REPLIES_PROMPT,
     DRAFT_SYSTEM_PROMPT,
+    DRAFT_SYSTEM_PROMPT_WITH_GUIDELINES,
     EMAIL_XML_TEMPLATE,
     SYSTEM_PROMPT,
+    SYSTEM_PROMPT_WITH_GUIDELINES,
     THREAD_MESSAGE_XML_TEMPLATE,
     THREAD_XML_TEMPLATE,
 )
@@ -116,15 +118,10 @@ class EmailCategorizer:
             self._client = anthropic.Anthropic(api_key=config.api_key)
 
         # Load and build the full system prompt with guidelines
-        guidelines = _load_guidelines(guidelines_path or _GUIDELINES_PATH)
-        if guidelines:
-            self._system_prompt = (
-                SYSTEM_PROMPT
-                + "\n\n--- USER-DEFINED CATEGORIZATION GUIDELINES ---\n\n"
-                + "The following guidelines were provided by the user. "
-                + "They OVERRIDE the defaults above when there is a conflict. "
-                + "Follow them strictly, especially any sender overrides or custom rules.\n\n"
-                + guidelines
+        self._guidelines = _load_guidelines(guidelines_path or _GUIDELINES_PATH)
+        if self._guidelines:
+            self._system_prompt = SYSTEM_PROMPT_WITH_GUIDELINES.format(
+                guidelines=self._guidelines,
             )
         else:
             self._system_prompt = SYSTEM_PROMPT
@@ -294,7 +291,13 @@ class EmailCategorizer:
             user_email=user_email,
         )
 
-        system = DRAFT_SYSTEM_PROMPT.format(user_email=user_email)
+        if self._guidelines:
+            system = DRAFT_SYSTEM_PROMPT_WITH_GUIDELINES.format(
+                user_email=user_email,
+                guidelines=self._guidelines,
+            )
+        else:
+            system = DRAFT_SYSTEM_PROMPT.format(user_email=user_email)
 
         try:
             response = self._client.messages.create(

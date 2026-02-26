@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 # Maps our categories to Gmail label names
 CATEGORY_LABELS = {
-    EmailCategory.ACTION_IMMEDIATELY: "Action Immediately",
-    EmailCategory.ACTION_EVENTUALLY: "Action Eventually",
-    EmailCategory.SUMMARY_ONLY: "Summary",
+    EmailCategory.ACTION_IMMEDIATELY: "Email Manager/Action Today",
+    EmailCategory.ACTION_EVENTUALLY: "Email Manager/Action Week",
+    EmailCategory.SUMMARY_ONLY: "Email Manager/Summary Only",
 }
 
 

@@ -289,6 +289,8 @@ def run_test(
                 proxy = GmailProxyClient(config.gmail_proxy)
                 stats = proxy.apply_labels_and_archive(categorized)
                 print(f"  Labeled: {stats['labeled']} | Archived: {stats['archived']} | Errors: {stats['errors']}")
+                if stats['errors'] > 0:
+                    raise RuntimeError(f"Gmail labeling had {stats['errors']} error(s)")
             else:
                 print("  \033[93mGmail proxy not configured (GMAIL_PROXY_SECRET missing), skipping\033[0m")
 
